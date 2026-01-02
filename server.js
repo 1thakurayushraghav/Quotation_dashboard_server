@@ -12,17 +12,44 @@ const customerRoutes = require('./routes/customer');
 
 const app = express();
 
-// Middleware
+/* ======================
+   TRUST PROXY (IMPORTANT FOR RENDER)
+====================== */
+app.set('trust proxy', 1);
+
+/* ======================
+   CORS CONFIGURATION
+====================== */
+const allowedOrigins = [
+  'http://localhost:3000',
+  process.env.CLIENT_URL
+];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  origin: function (origin, callback) {
+    // Allow Postman / server-to-server / mobile apps
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+/* ======================
+   BODY PARSERS
+====================== */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Database Connection
+/* ======================
+   DATABASE CONNECTION
+====================== */
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ MongoDB Connected Successfully'))
   .catch(err => {
@@ -30,7 +57,9 @@ mongoose.connect(process.env.MONGODB_URI)
     process.exit(1);
   });
 
-// Routes
+/* ======================
+   ROUTES
+====================== */
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/quotations', quotationRoutes);
@@ -38,23 +67,36 @@ app.use('/api/company', companyRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/customers', customerRoutes);
 
-// Test endpoint
+/* ======================
+   TEST & HEALTH ROUTES
+====================== */
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
 
-// Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'OK',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Error handling middleware
+/* ======================
+   ERROR HANDLER
+====================== */
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ message: 'Something went wrong!', error: err.message });
+  console.error('❌ Error:', err.message);
+  res.status(500).json({
+    success: false,
+    message: err.message || 'Internal Server Error'
+  });
 });
 
+/* ======================
+   SERVER START
+====================== */
 const PORT = process.env.PORT || 5000;
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
