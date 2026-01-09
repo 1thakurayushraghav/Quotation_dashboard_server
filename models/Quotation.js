@@ -5,29 +5,64 @@ const quotationItemSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product'
   },
+
+  productName: {
+    type: String,
+    required: true
+  },
+  unitOfMeasure: {
+    type: String,
+    default: ''
+  },
+
   description: {
     type: String,
     required: true
   },
+
   quantity: {
     type: Number,
     required: true,
     min: 1
   },
+
   rate: {
     type: Number,
     required: true,
     min: 0
   },
+
   amount: {
     type: Number,
     required: true
   },
+
   tax: {
     type: Number,
     default: 0
+  },
+
+  parameters: [
+    {
+      title: String,
+      specs: [
+        {
+          label: String,
+          value: String
+        }
+      ]
+    }
+  ],
+  generalSpecifications: {
+    type: [
+      {
+        text: { type: String, trim: true }
+      }
+    ],
+    default: []
   }
 });
+
 
 const quotationSchema = new mongoose.Schema({
   quotationNumber: {
@@ -124,23 +159,41 @@ const quotationSchema = new mongoose.Schema({
 });
 
 // Auto-generate quotation number - FIXED VERSION
-quotationSchema.pre('save', function(next) {
-  const quotation = this;
-  
-  // If quotation number already exists, skip
-  if (quotation.quotationNumber) {
+quotationSchema.pre('save', async function (next) {
+  if (this.quotationNumber) {
     return next();
   }
 
-  // Generate new quotation number
-  mongoose.model('Quotation').countDocuments()
-    .then(count => {
-      quotation.quotationNumber = `QT-${String(count + 1).padStart(5, '0')}`;
-      next();
-    })
-    .catch(err => {
-      next(err);
+  try {
+    const now = new Date();
+
+    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const month = monthNames[now.getMonth()];
+    const year = String(now.getFullYear()).slice(-2); // 25
+
+    const monthYearKey = `${month}${year}`; // JAN25
+
+    // Month start & end
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+
+    // Count quotations only for current month
+    const count = await mongoose.model('Quotation').countDocuments({
+      createdAt: {
+        $gte: startOfMonth,
+        $lte: endOfMonth
+      }
     });
+
+    const sequence = String(count + 1).padStart(3, '0');
+
+    this.quotationNumber = `QES/QT/${monthYearKey}/${sequence}`;
+
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
+
 
 module.exports = mongoose.model('Quotation', quotationSchema);

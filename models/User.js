@@ -17,24 +17,40 @@ const userSchema = new mongoose.Schema({
   password: {
     type: String,
     required: true,
-    minlength: 6
+    minlength: 6,
+    select: false // ensures password is not returned by default
   },
   role: {
     type: String,
     enum: ['admin', 'user'],
     default: 'user'
   },
+  phone: {
+    type: String,
+    default: ''
+  },
   isActive: {
     type: Boolean,
     default: true
+  },
+  avatar: {
+    type: String,
+    default: '' // optional avatar URL
   }
 }, {
   timestamps: true
 });
 
-// Compare password method - NO PRE-SAVE MIDDLEWARE
-userSchema.methods.comparePassword = function(candidatePassword) {
+/* ================= Compare Password Method ================= */
+userSchema.methods.comparePassword = async function(candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
+};
+
+/* ================= Hide Sensitive Data ================= */
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.password; // remove password from returned object
+  return obj;
 };
 
 module.exports = mongoose.model('User', userSchema);

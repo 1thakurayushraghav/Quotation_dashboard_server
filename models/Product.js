@@ -27,6 +27,41 @@ const productSchema = new mongoose.Schema({
     default: '',
     trim: true
   },
+  parameters: [
+    {
+      title: {
+        type: String,
+        required: false, // Rain Fall, Windspeed
+        trim: true
+      },
+      specs: [
+        {
+          label: {
+            type: String,
+            required: false, // Measuring Range, Accuracy
+            trim: true
+          },
+          value: {
+            type: String,
+            required: false, // 0–30 m/s
+            trim: true
+          }
+        }
+      ]
+    }
+  ],
+
+  generalSpecifications: {
+    type: [
+      {
+        text: {
+          type: String,
+          trim: true
+        }
+      }
+    ],
+    default: []
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

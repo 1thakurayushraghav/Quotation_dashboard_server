@@ -1,59 +1,86 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const Quotation = require('../models/Quotation');
+const Product = require('../models/Product'); // ✅ IMPORTANT
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Get all quotations (excluding deleted)
-router.get('/', authenticate, async (req, res) => {
-  try {
-    const query = { 
-      $or: [
-        { isDeleted: false },
-        { isDeleted: { $exists: false } }
-      ],
-      ...(req.user.role === 'admin' ? {} : { createdBy: req.user._id })
-    };
-    const quotations = await Quotation.find(query)
-      .populate('createdBy', 'name email')
-      .sort({ createdAt: -1 });
-    
-    res.json({ quotations });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
-});
-
-// Get deleted quotations (Recycle Bin)
+/* ======================================================
+   GET DELETED QUOTATIONS (RECYCLE BIN) ✅
+====================================================== */
 router.get('/deleted', authenticate, async (req, res) => {
   try {
-    const query = { 
+    const query = {
       isDeleted: true,
       ...(req.user.role === 'admin' ? {} : { createdBy: req.user._id })
     };
+
     const quotations = await Quotation.find(query)
       .populate('createdBy', 'name email')
       .sort({ deletedAt: -1 });
-    
+
     res.json({ quotations });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    res.status(500).json({
+      message: 'Failed to load deleted quotations',
+      error: error.message
+    });
   }
 });
 
-// Get single quotation
+/* ======================================================
+   GET ALL QUOTATIONS
+====================================================== */
+router.get('/', authenticate, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const query = {
+      $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }],
+      ...(req.user.role === 'admin' ? {} : { createdBy: req.user._id })
+    };
+
+    const [quotations, total] = await Promise.all([
+      Quotation.find(query)
+        .select('quotationNumber customerName customerEmail total status createdAt createdBy')
+        .populate('createdBy', 'name')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+
+      Quotation.countDocuments(query)
+    ]);
+
+    res.json({ quotations, total });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+});
+
+
+
+
+
+/* ======================================================
+   GET SINGLE QUOTATION
+====================================================== */
 router.get('/:id', authenticate, async (req, res) => {
   try {
     const quotation = await Quotation.findById(req.params.id)
       .populate('createdBy', 'name email');
-    
+
     if (!quotation) {
       return res.status(404).json({ message: 'Quotation not found' });
     }
 
-    // Check permission
-    if (req.user.role !== 'admin' && quotation.createdBy._id.toString() !== req.user._id.toString()) {
+    if (
+      req.user.role !== 'admin' &&
+      quotation.createdBy._id.toString() !== req.user._id.toString()
+    ) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -63,192 +90,205 @@ router.get('/:id', authenticate, async (req, res) => {
   }
 });
 
-// Create quotation
-router.post('/', authenticate, [
-  body('customerName').trim().notEmpty().withMessage('Customer name is required'),
-  body('customerEmail').isEmail().withMessage('Valid customer email is required'),
-  body('items').isArray({ min: 1 }).withMessage('At least one item is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array());
-      return res.status(400).json({ errors: errors.array() });
+/* ======================================================
+   CREATE QUOTATION ✅ FIXED
+====================================================== */
+router.post(
+  '/',
+  authenticate,
+  [
+    body('customerName').notEmpty(),
+    body('customerEmail').isEmail(),
+    body('items').isArray({ min: 1 })
+  ],
+  async (req, res) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({ errors: errors.array() });
+      }
+
+      const {
+        customerName,
+        customerEmail,
+        customerPhone,
+        customerAddress,
+        items,
+        notes,
+        companyName,
+        contactName,
+        companyPhone,
+        companyAddress,
+        companyLogo,
+        customerCompanyName,
+        shippingDetails,
+        customerId
+      } = req.body;
+
+      // ✅ FETCH PRODUCT DATA
+      const itemsWithAmount = await Promise.all(
+        items.map(async (item) => {
+          const product = await Product.findById(item.productId).lean();
+          if (!product) throw new Error('Product not found');
+
+          const amount = item.quantity * product.price;
+
+          return {
+            productId: product._id,
+            productName: product.productName,
+            unitOfMeasure: product.unitOfMeasure,
+            description: product.description,
+            quantity: item.quantity,
+            rate: product.price,
+            amount,
+            tax: product.tax,
+            parameters: product.parameters || [],
+            generalSpecifications: product.generalSpecifications || []
+          };
+        })
+      );
+
+      const subtotal = itemsWithAmount.reduce((s, i) => s + i.amount, 0);
+      const taxAmount = itemsWithAmount.reduce(
+        (s, i) => s + (i.amount * i.tax) / 100,
+        0
+      );
+      const total = subtotal + taxAmount;
+
+      const quotation = new Quotation({
+        companyName,
+        contactName,
+        companyPhone,
+        companyAddress,
+        companyLogo,
+        customerId,
+        customerName,
+        customerEmail,
+        customerPhone,
+        customerAddress,
+        customerCompanyName,
+        shippingDetails,
+        items: itemsWithAmount,
+        subtotal,
+        tax: taxAmount,
+        total,
+        notes,
+        createdBy: req.user._id
+      });
+
+      await quotation.save();
+      await quotation.populate('createdBy', 'name email');
+
+      res.status(201).json({
+        message: 'Quotation created successfully',
+        quotation
+      });
+    } catch (error) {
+      console.error('CREATE QUOTATION ERROR:', error);
+      res.status(500).json({ message: error.message });
     }
-
-    const { customerName, customerEmail, customerPhone, customerAddress, items, tax, notes, 
-            companyName, contactName, companyPhone, companyAddress, companyLogo,
-            customerCompanyName, shippingDetails, customerId } = req.body;
-
-    // Calculate amounts
-    const itemsWithAmount = items.map(item => ({
-      productId: item.productId || null,
-      description: item.description,
-      quantity: item.quantity,
-      rate: item.rate,
-      amount: item.quantity * item.rate,
-      tax: item.tax || 0
-    }));
-
-    const subtotal = itemsWithAmount.reduce((sum, item) => sum + item.amount, 0);
-    const taxAmount = tax || 0;
-    const total = subtotal + taxAmount;
-
-    const quotation = new Quotation({
-      // Company details
-      companyName: companyName || '',
-      contactName: contactName || '',
-      companyPhone: companyPhone || '',
-      companyAddress: companyAddress || '',
-      companyLogo: companyLogo || '',
-      
-      // Customer details
-      customerId: customerId || null,
-      customerName,
-      customerEmail,
-      customerPhone: customerPhone || '',
-      customerAddress: customerAddress || '',
-      customerCompanyName: customerCompanyName || '',
-      shippingDetails: shippingDetails || '',
-      
-      // Items and totals
-      items: itemsWithAmount,
-      subtotal,
-      tax: taxAmount,
-      total,
-      notes: notes || '',
-      createdBy: req.user._id
-    });
-
-    await quotation.save();
-    await quotation.populate('createdBy', 'name email');
-
-    res.status(201).json({
-      message: 'Quotation created successfully',
-      quotation
-    });
-  } catch (error) {
-    console.error('Quotation creation error:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
   }
-});
+);
 
-// Update quotation
+
+
+/* ======================================================
+   UPDATE QUOTATION ✅ FIXED
+====================================================== */
 router.put('/:id', authenticate, async (req, res) => {
   try {
     const quotation = await Quotation.findById(req.params.id);
-    
     if (!quotation) {
       return res.status(404).json({ message: 'Quotation not found' });
     }
 
-    // Check permission
-    if (req.user.role !== 'admin' && quotation.createdBy.toString() !== req.user._id.toString()) {
+    if (
+      req.user.role !== 'admin' &&
+      quotation.createdBy.toString() !== req.user._id.toString()
+    ) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const { customerName, customerEmail, customerPhone, customerAddress, items, tax, status, notes } = req.body;
+    const { items, customerName, customerEmail, customerPhone, customerAddress, status, notes } =
+      req.body;
 
     if (items) {
-      const itemsWithAmount = items.map(item => ({
-        ...item,
-        amount: item.quantity * item.rate
-      }));
-      
+      const itemsWithAmount = await Promise.all(
+        items.map(async (item) => {
+          const product = await Product.findById(item.productId).lean();
+          if (!product) throw new Error('Product not found');
+
+          const amount = item.quantity * product.price;
+
+          return {
+            productId: product._id,
+            productName: product.productName,
+            unitOfMeasure: product.unitOfMeasure,
+            description: product.description,
+            quantity: item.quantity,
+            rate: product.price,
+            amount,
+            tax: product.tax,
+            parameters: product.parameters || [],
+            generalSpecifications: product.generalSpecifications || []
+          };
+        })
+      );
+
       quotation.items = itemsWithAmount;
-      quotation.subtotal = itemsWithAmount.reduce((sum, item) => sum + item.amount, 0);
-      quotation.tax = tax || 0;
+      quotation.subtotal = itemsWithAmount.reduce((s, i) => s + i.amount, 0);
+      quotation.tax = itemsWithAmount.reduce(
+        (s, i) => s + (i.amount * i.tax) / 100,
+        0
+      );
       quotation.total = quotation.subtotal + quotation.tax;
     }
 
-    quotation.customerName = customerName || quotation.customerName;
-    quotation.customerEmail = customerEmail || quotation.customerEmail;
-    quotation.customerPhone = customerPhone || quotation.customerPhone;
-    quotation.customerAddress = customerAddress || quotation.customerAddress;
-    quotation.status = status || quotation.status;
-    quotation.notes = notes !== undefined ? notes : quotation.notes;
+    quotation.customerName = customerName ?? quotation.customerName;
+    quotation.customerEmail = customerEmail ?? quotation.customerEmail;
+    quotation.customerPhone = customerPhone ?? quotation.customerPhone;
+    quotation.customerAddress = customerAddress ?? quotation.customerAddress;
+    quotation.status = status ?? quotation.status;
+    quotation.notes = notes ?? quotation.notes;
 
     await quotation.save();
     await quotation.populate('createdBy', 'name email');
 
-    res.json({
-      message: 'Quotation updated successfully',
-      quotation
-    });
+    res.json({ message: 'Quotation updated successfully', quotation });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('UPDATE QUOTATION ERROR:', error);
+    res.status(500).json({ message: error.message });
   }
 });
 
-// Delete quotation (Soft delete - move to recycle bin)
+/* ======================================================
+   DELETE / RESTORE / PERMANENT DELETE
+====================================================== */
 router.delete('/:id', authenticate, async (req, res) => {
-  try {
-    const quotation = await Quotation.findById(req.params.id);
-    
-    if (!quotation) {
-      return res.status(404).json({ message: 'Quotation not found' });
-    }
+  const quotation = await Quotation.findById(req.params.id);
+  if (!quotation) return res.status(404).json({ message: 'Not found' });
 
-    // Check permission
-    if (req.user.role !== 'admin' && quotation.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
+  quotation.isDeleted = true;
+  quotation.deletedAt = new Date();
+  await quotation.save();
 
-    // Soft delete
-    quotation.isDeleted = true;
-    quotation.deletedAt = new Date();
-    await quotation.save();
-
-    res.json({ message: 'Quotation moved to recycle bin' });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
+  res.json({ message: 'Quotation moved to recycle bin' });
 });
 
-// Restore quotation from recycle bin
 router.put('/:id/restore', authenticate, async (req, res) => {
-  try {
-    const quotation = await Quotation.findById(req.params.id);
-    
-    if (!quotation) {
-      return res.status(404).json({ message: 'Quotation not found' });
-    }
+  const quotation = await Quotation.findById(req.params.id);
+  if (!quotation) return res.status(404).json({ message: 'Not found' });
 
-    // Check permission
-    if (req.user.role !== 'admin' && quotation.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
+  quotation.isDeleted = false;
+  quotation.deletedAt = null;
+  await quotation.save();
 
-    // Restore
-    quotation.isDeleted = false;
-    quotation.deletedAt = null;
-    await quotation.save();
-
-    res.json({ message: 'Quotation restored successfully', quotation });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
+  res.json({ message: 'Quotation restored', quotation });
 });
 
-// Permanent delete
 router.delete('/:id/permanent', authenticate, async (req, res) => {
-  try {
-    const quotation = await Quotation.findById(req.params.id);
-    
-    if (!quotation) {
-      return res.status(404).json({ message: 'Quotation not found' });
-    }
-
-    // Check permission
-    if (req.user.role !== 'admin' && quotation.createdBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    await Quotation.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Quotation permanently deleted' });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
+  await Quotation.findByIdAndDelete(req.params.id);
+  res.json({ message: 'Quotation permanently deleted' });
 });
 
 module.exports = router;
