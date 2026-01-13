@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const Quotation = require('../models/Quotation');
 const Product = require('../models/Product'); // ✅ IMPORTANT
 const { authenticate } = require('../middleware/auth');
+const permit = require('../middleware/permission');
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ router.get('/deleted', authenticate, async (req, res) => {
 /* ======================================================
    GET ALL QUOTATIONS
 ====================================================== */
-router.get('/', authenticate, async (req, res) => {
+router.get('/', authenticate, permit('quotation', 'read'), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
@@ -68,7 +69,7 @@ router.get('/', authenticate, async (req, res) => {
 /* ======================================================
    GET SINGLE QUOTATION
 ====================================================== */
-router.get('/:id', authenticate, async (req, res) => {
+router.get('/:id', authenticate, permit('quotation', 'read'), async (req, res) => {
   try {
     const quotation = await Quotation.findById(req.params.id)
       .populate('createdBy', 'name email');
@@ -96,6 +97,7 @@ router.get('/:id', authenticate, async (req, res) => {
 router.post(
   '/',
   authenticate,
+  permit('quotation', 'create'),
   [
     body('customerName').notEmpty(),
     body('customerEmail').isEmail(),
@@ -195,7 +197,7 @@ router.post(
 /* ======================================================
    UPDATE QUOTATION ✅ FIXED
 ====================================================== */
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate, permit('quotation', 'update'), async (req, res) => {
   try {
     const quotation = await Quotation.findById(req.params.id);
     if (!quotation) {
@@ -264,7 +266,7 @@ router.put('/:id', authenticate, async (req, res) => {
 /* ======================================================
    DELETE / RESTORE / PERMANENT DELETE
 ====================================================== */
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, permit('quotation', 'delete'), async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) return res.status(404).json({ message: 'Not found' });
 
@@ -275,7 +277,7 @@ router.delete('/:id', authenticate, async (req, res) => {
   res.json({ message: 'Quotation moved to recycle bin' });
 });
 
-router.put('/:id/restore', authenticate, async (req, res) => {
+router.put('/:id/restore', authenticate, permit('quotation', 'update'), async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) return res.status(404).json({ message: 'Not found' });
 
@@ -286,7 +288,7 @@ router.put('/:id/restore', authenticate, async (req, res) => {
   res.json({ message: 'Quotation restored', quotation });
 });
 
-router.delete('/:id/permanent', authenticate, async (req, res) => {
+router.delete('/:id/permanent', authenticate, permit('quotation', 'delete'), async (req, res) => {
   await Quotation.findByIdAndDelete(req.params.id);
   res.json({ message: 'Quotation permanently deleted' });
 });

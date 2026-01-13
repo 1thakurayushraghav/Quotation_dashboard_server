@@ -253,4 +253,55 @@ router.delete('/:id', authenticate, isAdmin, async (req, res) => {
   }
 });
 
+/* ================= UPDATE USER PERMISSIONS (ADMIN) ================= */
+router.put(
+  '/:id/permissions',
+  authenticate,
+  isAdmin,
+  async (req, res) => {
+    try {
+      const { permissions } = req.body;
+
+      if (!permissions || !permissions.quotation) {
+        return res.status(400).json({
+          message: 'Invalid permissions payload'
+        });
+      }
+
+      const user = await User.findById(req.params.id);
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      // Prevent changing admin permissions (optional but recommended)
+      if (user.role === 'admin') {
+        return res.status(400).json({
+          message: 'Admin permissions cannot be modified'
+        });
+      }
+
+      user.permissions = {
+        ...user.permissions,
+        quotation: {
+          create: !!permissions.quotation.create,
+          read:   !!permissions.quotation.read,
+          update: !!permissions.quotation.update,
+          delete: !!permissions.quotation.delete
+        }
+      };
+
+      await user.save();
+
+      res.json({
+        message: 'Permissions updated successfully',
+        permissions: user.permissions
+      });
+    } catch (error) {
+      console.error('PERMISSION UPDATE ERROR:', error);
+      res.status(500).json({ message: error.message });
+    }
+  }
+);
+
+
 module.exports = router;

@@ -1,6 +1,17 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+/* ================= Permission Schema ================= */
+const permissionSchema = new mongoose.Schema({
+  quotation: {
+    create: { type: Boolean, default: false },
+    read:   { type: Boolean, default: true },
+    update: { type: Boolean, default: false },
+    delete: { type: Boolean, default: false }
+  }
+}, { _id: false });
+
+/* ================= User Schema ================= */
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -18,7 +29,7 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: true,
     minlength: 6,
-    select: false // ensures password is not returned by default
+    select: false 
   },
   role: {
     type: String,
@@ -35,21 +46,28 @@ const userSchema = new mongoose.Schema({
   },
   avatar: {
     type: String,
-    default: 'null' 
+    default: 'null'
+  },
+
+  /* 🔐 Permissions controlled by Admin */
+  permissions: {
+    type: permissionSchema,
+    default: () => ({})
   }
+
 }, {
   timestamps: true
 });
 
-/* ================= Compare Password Method ================= */
-userSchema.methods.comparePassword = async function(candidatePassword) {
+/* ================= Compare Password ================= */
+userSchema.methods.comparePassword = async function (candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
 /* ================= Hide Sensitive Data ================= */
-userSchema.methods.toJSON = function() {
+userSchema.methods.toJSON = function () {
   const obj = this.toObject();
-  delete obj.password; // remove password from returned object
+  delete obj.password;
   return obj;
 };
 
