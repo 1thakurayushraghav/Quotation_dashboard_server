@@ -14,7 +14,7 @@ const customerRoutes = require('./routes/customer');
 const app = express();
 
 /* ======================
-   TRUST PROXY (IMPORTANT FOR RENDER)
+   TRUST PROXY 
 ====================== */
 app.set('trust proxy', 1);
 

@@ -86,10 +86,10 @@ const quotationSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
-  companyLogo: {
-    type: String,
-    default: ''
-  },
+  // companyLogo: {
+  //   type: String,
+  //   default: ''
+  // },
   // Customer Details
   customerId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -134,10 +134,71 @@ const quotationSchema = new mongoose.Schema({
     required: true
   },
   status: {
-    type: String,
-    enum: ['draft', 'sent', 'accepted', 'rejected'],
-    default: 'draft'
+  type: String,
+  enum: ['in_process', 'revised', 'complete', 'failed'],
+  default: 'in_process'
+},
+
+revision: {
+  type: Number,
+  default: 0
+},
+
+statusHistory: [
+  {
+    status: {
+      type: String,
+      enum: ['in_process', 'revised', 'complete', 'failed'],
+      required: true
+    },
+
+    revision: {
+      type: Number,
+      default: 0
+    },
+
+    updatedBy: {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      },
+      name: String
+    },
+
+    role: String,
+
+    // 🔥 OLD quotation snapshot
+    snapshot: {
+  before: {
+    customerName: String,
+    customerEmail: String,
+    customerPhone: String,
+    customerAddress: String,
+    items: [quotationItemSchema],
+    subtotal: Number,
+    tax: Number,
+    total: Number
   },
+  after: {
+    customerName: String,
+    customerEmail: String,
+    customerPhone: String,
+    customerAddress: String,
+    items: [quotationItemSchema],
+    subtotal: Number,
+    tax: Number,
+    total: Number
+  }
+},
+
+
+    at: {
+      type: Date,
+      default: Date.now
+    }
+  }
+],
+
   notes: {
     type: String
   },

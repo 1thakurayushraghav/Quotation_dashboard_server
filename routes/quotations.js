@@ -38,16 +38,46 @@ router.get('/', authenticate, permit('quotation', 'read'), async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
+    const search = req.query.search?.trim();
+    const status = req.query.status || 'all';
 
     const query = {
-      $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }],
-      ...(req.user.role === 'admin' ? {} : { createdBy: req.user._id })
+      $and: [
+        {
+          $or: [{ isDeleted: false }, { isDeleted: { $exists: false } }]
+        }
+      ]
     };
+
+    // 🔒 Role filter
+    if (req.user.role !== 'admin') {
+      query.$and.push({ createdBy: req.user._id });
+    }
+
+    // 🔍 Search filter (THIS WAS BROKEN BEFORE)
+    if (search) {
+      query.$and.push({
+        $or: [
+          { quotationNumber: { $regex: search, $options: 'i' } },
+          { customerName: { $regex: search, $options: 'i' } },
+          { customerEmail: { $regex: search, $options: 'i' } },
+          { customerCompanyName: { $regex: search, $options: 'i' } }
+        ]
+      });
+    }
+
+    // 📌 Status filter
+    if (status !== 'all') {
+      query.$and.push({ status });
+    }
 
     const [quotations, total] = await Promise.all([
       Quotation.find(query)
-        .select('quotationNumber customerName customerEmail total status createdAt createdBy')
+        .select(
+          'quotationNumber customerName customerEmail total status createdAt createdBy statusHistory'
+        )
         .populate('createdBy', 'name')
+        .populate('statusHistory.updatedBy.userId', 'name role')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -56,40 +86,195 @@ router.get('/', authenticate, permit('quotation', 'read'), async (req, res) => {
       Quotation.countDocuments(query)
     ]);
 
-    res.json({ quotations, total });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.json({
+      quotations,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit)
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
-
-
 
 
 
 /* ======================================================
-   GET SINGLE QUOTATION
+   UPDATE SINGLE QUOTATION (FIXED + STABLE)
 ====================================================== */
-router.get('/:id', authenticate, permit('quotation', 'read'), async (req, res) => {
+router.put('/:id', authenticate, permit('quotation', 'update'), async (req, res) => {
   try {
-    const quotation = await Quotation.findById(req.params.id)
-      .populate('createdBy', 'name email');
-
+    const quotation = await Quotation.findById(req.params.id);
     if (!quotation) {
       return res.status(404).json({ message: 'Quotation not found' });
     }
 
+    // 🔒 Ownership check
     if (
       req.user.role !== 'admin' &&
-      quotation.createdBy._id.toString() !== req.user._id.toString()
+      quotation.createdBy.toString() !== req.user._id.toString()
     ) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    res.json({ quotation });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    // 🔒 Lock completed / failed
+    if (['complete', 'failed'].includes(quotation.status)) {
+      return res.status(400).json({
+        message: 'Completed / Failed quotation cannot be edited'
+      });
+    }
+
+    const {
+      items,
+      customerName,
+      customerEmail,
+      customerPhone,
+      customerAddress,
+      status,
+      notes
+    } = req.body;
+
+    /* ---------- BEFORE SNAPSHOT (DEEP COPY) ---------- */
+    const beforeSnapshot = JSON.parse(JSON.stringify({
+      customerName: quotation.customerName,
+      customerEmail: quotation.customerEmail,
+      customerPhone: quotation.customerPhone,
+      customerAddress: quotation.customerAddress,
+      items: quotation.items,
+      subtotal: quotation.subtotal,
+      tax: quotation.tax,
+      total: quotation.total
+    }));
+
+
+    let isEdited = false;
+
+   /* ---------- ITEMS UPDATE ---------- */
+if (Array.isArray(items) && items.length > 0) {
+  const itemsWithAmount = await Promise.all(
+    items.map(async (item) => {
+      const product = await Product.findById(item.productId).lean();
+      if (!product) throw new Error('Product not found');
+
+      const rate = item.rate ?? product.price;
+      const amount = item.quantity * rate;
+
+      return {
+        productId: product._id,
+        productName: product.productName,
+        unitOfMeasure: product.unitOfMeasure,
+        description: product.description,
+        quantity: item.quantity,
+        rate,
+        amount,
+        tax: product.tax,
+        parameters: product.parameters || [],
+        generalSpecifications: product.generalSpecifications || []
+      };
+    })
+  );
+
+  quotation.items = itemsWithAmount;
+  quotation.subtotal = itemsWithAmount.reduce((s, i) => s + i.amount, 0);
+  quotation.tax = itemsWithAmount.reduce(
+    (s, i) => s + (i.amount * i.tax) / 100,
+    0
+  );
+  quotation.total = quotation.subtotal + quotation.tax;
+
+  isEdited = true;
+}
+
+
+    /* ---------- BASIC FIELDS ---------- */
+    if (customerName !== undefined) { quotation.customerName = customerName; isEdited = true; }
+    if (customerEmail !== undefined) { quotation.customerEmail = customerEmail; isEdited = true; }
+    if (customerPhone !== undefined) { quotation.customerPhone = customerPhone; isEdited = true; }
+    if (customerAddress !== undefined) { quotation.customerAddress = customerAddress; isEdited = true; }
+    if (notes !== undefined) { quotation.notes = notes; isEdited = true; }
+
+    /* ---------- AFTER SNAPSHOT (DEEP COPY) ---------- */
+    const afterSnapshot = JSON.parse(JSON.stringify({
+      customerName: quotation.customerName,
+      customerEmail: quotation.customerEmail,
+      customerPhone: quotation.customerPhone,
+      customerAddress: quotation.customerAddress,
+      items: quotation.items,
+      subtotal: quotation.subtotal,
+      tax: quotation.tax,
+      total: quotation.total
+    }));
+
+    /* ---------- STATUS HANDLING ---------- */
+
+    // ✅ COMPLETE / FAILED
+    if (status && ['complete', 'failed'].includes(status)) {
+      quotation.status = status;
+
+      quotation.statusHistory.push({
+        status,
+        revision: quotation.revision,
+        updatedBy: {
+          userId: req.user._id,
+          name: req.user.name
+        },
+        role: req.user.role,
+        snapshot: {
+          before: beforeSnapshot,
+          after: afterSnapshot
+        },
+        at: new Date()
+      });
+    }
+
+    // ✅ REVISED
+    else if (isEdited) {
+      const lastHistory = quotation.statusHistory.at(-1);
+
+      const previousSnapshot =
+        lastHistory?.snapshot?.after
+          ? JSON.parse(JSON.stringify(lastHistory.snapshot.after))
+          : beforeSnapshot;
+
+      quotation.revision += 1;
+      quotation.status = 'revised';
+
+      quotation.statusHistory.push({
+        status: 'revised',
+        revision: quotation.revision,
+        updatedBy: {
+          userId: req.user._id,
+          name: req.user.name
+        },
+        role: req.user.role,
+        snapshot: {
+          before: previousSnapshot,
+          after: afterSnapshot
+        },
+        at: new Date()
+      });
+    }
+
+    await quotation.save();
+
+    // 🔥 RETURN FRESH POPULATED DATA
+    const updatedQuotation = await Quotation.findById(quotation._id)
+      .populate('createdBy', 'name')
+      .populate('statusHistory.updatedBy.userId', 'name role');
+
+    res.json({
+      message: 'Quotation updated successfully',
+      quotation: updatedQuotation
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: err.message });
   }
 });
+
+
+
 
 /* ======================================================
    CREATE QUOTATION ✅ FIXED
@@ -127,7 +312,6 @@ router.post(
         customerId
       } = req.body;
 
-      // ✅ FETCH PRODUCT DATA
       const itemsWithAmount = await Promise.all(
         items.map(async (item) => {
           const product = await Product.findById(item.productId).lean();
@@ -155,7 +339,6 @@ router.post(
         (s, i) => s + (i.amount * i.tax) / 100,
         0
       );
-      const total = subtotal + taxAmount;
 
       const quotation = new Quotation({
         companyName,
@@ -173,93 +356,72 @@ router.post(
         items: itemsWithAmount,
         subtotal,
         tax: taxAmount,
-        total,
+        total: subtotal + taxAmount,
         notes,
+        status: 'in_process',
+        revision: 0,
         createdBy: req.user._id
       });
 
-      await quotation.save();
-      await quotation.populate('createdBy', 'name email');
+      // 🔥 TRACK POINT 1
+      const initialSnapshot = JSON.parse(JSON.stringify({
+        customerName: quotation.customerName,
+        customerEmail: quotation.customerEmail,
+        customerPhone: quotation.customerPhone,
+        customerAddress: quotation.customerAddress,
+        items: quotation.items,
+        subtotal: quotation.subtotal,
+        tax: quotation.tax,
+        total: quotation.total
+      }));
 
-      res.status(201).json({
-        message: 'Quotation created successfully',
-        quotation
+
+      quotation.statusHistory.push({
+        status: 'in_process',
+        revision: 0,
+        updatedBy: {
+          userId: req.user._id,
+          name: req.user.name
+        },
+        role: req.user.role,
+        snapshot: {
+          before: null,
+          after: initialSnapshot
+        }
       });
-    } catch (error) {
-      console.error('CREATE QUOTATION ERROR:', error);
-      res.status(500).json({ message: error.message });
+
+
+      await quotation.save();
+      res.status(201).json({ message: 'Quotation created', quotation });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
     }
   }
 );
 
 
-
 /* ======================================================
-   UPDATE QUOTATION ✅ FIXED
+   GET SINGLE QUOTATION
 ====================================================== */
-router.put('/:id', authenticate, permit('quotation', 'update'), async (req, res) => {
+router.get('/:id', authenticate, permit('quotation', 'read'), async (req, res) => {
   try {
-    const quotation = await Quotation.findById(req.params.id);
+    const quotation = await Quotation.findById(req.params.id)
+      .populate('createdBy', 'name email');
+
     if (!quotation) {
       return res.status(404).json({ message: 'Quotation not found' });
     }
 
     if (
       req.user.role !== 'admin' &&
-      quotation.createdBy.toString() !== req.user._id.toString()
+      quotation.createdBy._id.toString() !== req.user._id.toString()
     ) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
-    const { items, customerName, customerEmail, customerPhone, customerAddress, status, notes } =
-      req.body;
-
-    if (items) {
-      const itemsWithAmount = await Promise.all(
-        items.map(async (item) => {
-          const product = await Product.findById(item.productId).lean();
-          if (!product) throw new Error('Product not found');
-
-          const amount = item.quantity * product.price;
-
-          return {
-            productId: product._id,
-            productName: product.productName,
-            unitOfMeasure: product.unitOfMeasure,
-            description: product.description,
-            quantity: item.quantity,
-            rate: product.price,
-            amount,
-            tax: product.tax,
-            parameters: product.parameters || [],
-            generalSpecifications: product.generalSpecifications || []
-          };
-        })
-      );
-
-      quotation.items = itemsWithAmount;
-      quotation.subtotal = itemsWithAmount.reduce((s, i) => s + i.amount, 0);
-      quotation.tax = itemsWithAmount.reduce(
-        (s, i) => s + (i.amount * i.tax) / 100,
-        0
-      );
-      quotation.total = quotation.subtotal + quotation.tax;
-    }
-
-    quotation.customerName = customerName ?? quotation.customerName;
-    quotation.customerEmail = customerEmail ?? quotation.customerEmail;
-    quotation.customerPhone = customerPhone ?? quotation.customerPhone;
-    quotation.customerAddress = customerAddress ?? quotation.customerAddress;
-    quotation.status = status ?? quotation.status;
-    quotation.notes = notes ?? quotation.notes;
-
-    await quotation.save();
-    await quotation.populate('createdBy', 'name email');
-
-    res.json({ message: 'Quotation updated successfully', quotation });
+    res.json({ quotation });
   } catch (error) {
-    console.error('UPDATE QUOTATION ERROR:', error);
-    res.status(500).json({ message: error.message });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
