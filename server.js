@@ -19,34 +19,32 @@ const app = express();
 app.set('trust proxy', 1);
 
 /* ======================
-   CORS CONFIGURATION
+   CORS CONFIGURATION (ALLOW ALL)
 ====================== */
-const allowedOrigins = [
-  '',
-  process.env.CLIENT_URL
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow Postman / server-to-server / mobile apps
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // 🔥 allow all origins dynamically
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Optional but recommended for preflight
+app.options('*', cors());
+
+/* ======================
+   DEBUG (OPTIONAL)
+====================== */
+app.use((req, res, next) => {
+  console.log("🌐 Incoming Origin:", req.headers.origin);
+  next();
+});
 
 /* ======================
    BODY PARSERS
 ====================== */
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
 app.use(
   "/uploads",
   express.static(path.join(__dirname, "uploads"))
