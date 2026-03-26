@@ -22,7 +22,7 @@ app.set('trust proxy', 1);
    CORS CONFIGURATION
 ====================== */
 const allowedOrigins = [
-  'https://quotation.qespl.com',
+  '',
   process.env.CLIENT_URL
 ];
 
